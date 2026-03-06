@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { User, Event, EventInventoryItem } from '../types';
+import { User, KPREvent, EventInventoryItem } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
+import { mockApi } from '../services/mockApi';
 import { 
   Calendar, 
-  History, 
+  History as HistoryIcon, 
   CheckCircle, 
   XCircle, 
   Filter, 
@@ -14,7 +15,8 @@ import {
   ChevronLeft,
   Package,
   Clock,
-  Trash2
+  Trash2,
+  FileText
 } from 'lucide-react';
 
 interface PrincipalDashboardProps {
@@ -24,8 +26,8 @@ interface PrincipalDashboardProps {
 
 export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboardProps) {
   const [view, setView] = useState<'Upcoming' | 'History'>('Upcoming');
-  const [events, setEvents] = useState<Event[]>([]);
-  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [events, setEvents] = useState<KPREvent[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<KPREvent | null>(null);
   const [inventory, setInventory] = useState<EventInventoryItem[]>([]);
   const [filterDept, setFilterDept] = useState('All');
   const [sortField, setSortField] = useState<'date' | 'student_count'>('date');
@@ -39,18 +41,24 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
     fetchEvents();
   }, [view]);
 
+  const getHallImage = (hallName: string) => {
+    if (hallName.toLowerCase().includes('seminar')) {
+      return "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop";
+    }
+    return "https://images.unsplash.com/photo-1580582932707-520aed937b7b?q=80&w=1000&auto=format&fit=crop";
+  };
+
   const fetchEvents = async () => {
     try {
-      const res = await fetch('/api/events');
-      const data = await res.json();
+      const data = await mockApi.getEvents();
       if (!Array.isArray(data)) {
         setEvents([]);
         return;
       }
       if (view === 'Upcoming') {
-        setEvents(data.filter((e: Event) => e.status === 'Pending_Principal'));
+        setEvents(data.filter((e: KPREvent) => e.status === 'Pending_Principal'));
       } else {
-        setEvents(data.filter((e: Event) => e.status === 'Approved' || e.status === 'Declined'));
+        setEvents(data.filter((e: KPREvent) => e.status === 'Approved' || e.status === 'Declined'));
       }
     } catch (err) {
       console.error('Fetch events error:', err);
@@ -59,33 +67,62 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
   };
 
   const fetchInventory = async (eventId: number) => {
-    const res = await fetch(`/api/event-inventory/${eventId}`);
-    const data = await res.json();
+    const data = await mockApi.getEventInventory(eventId);
     setInventory(data);
   };
 
-  const handleSelectEvent = (event: Event) => {
+  const exportCSV = () => {
+    const headers = ['Event Name', 'Coordinator', 'Date', 'Status', 'Dept', 'Students', 'Hall'];
+    const rows = filteredEvents.map(e => [
+      `"${(e.name || '').replace(/"/g, '""')}"`,
+      `"${(e.coordinator_name || '').replace(/"/g, '""')}"`,
+      e.date || '',
+      e.status || '',
+      `"${(e.department || '').replace(/"/g, '""')}"`,
+      e.student_count || 0,
+      `"${(e.hall_name || '').replace(/"/g, '""')}"`
+    ]);
+    
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => row.join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `principal_report_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSelectEvent = (event: KPREvent) => {
     setSelectedEvent(event);
     fetchInventory(event.id);
   };
 
   const handleApprove = async (status: 'Approved' | 'Declined') => {
     if (!selectedEvent) return;
-    await fetch(`/api/events/${selectedEvent.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-    alert(`Event ${status.toLowerCase()} successfully.`);
-    setSelectedEvent(null);
-    fetchEvents();
+    try {
+      await mockApi.updateEvent(selectedEvent.id, { status });
+      alert(`Event ${status.toLowerCase()} successfully.`);
+      setSelectedEvent(null);
+      fetchEvents();
+    } catch (err) {
+      console.error('Approve/Decline error:', err);
+    }
   };
 
   const handleDeleteEvent = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
     if (!confirm('Are you sure you want to delete this event?')) return;
     try {
-      await fetch(`/api/events/${id}`, { method: 'DELETE' });
+      await mockApi.deleteEvent(id);
+      alert('Event deleted successfully.');
       fetchEvents();
       if (selectedEvent?.id === id) setSelectedEvent(null);
     } catch (err) {
@@ -105,28 +142,34 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
   return (
     <div className="space-y-8">
       {/* View Switcher */}
-      <div className="flex justify-between items-center">
-        <div className="flex gap-4 bg-white p-2.5 rounded-[1.5rem] border border-slate-200 w-fit shadow-sm">
+      <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+        <div className="flex flex-wrap gap-4 bg-white p-2.5 rounded-[1.5rem] border border-slate-200 w-full md:w-fit shadow-sm">
           <button
             onClick={() => { setView('Upcoming'); setSelectedEvent(null); }}
-            className={`px-8 py-3 rounded-xl font-bold text-sm transition-all flex items-center gap-2.5 ${
+            className={`flex-1 md:flex-none px-8 py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2.5 ${
               view === 'Upcoming' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/20' : 'text-slate-400 hover:bg-slate-50'
             }`}
           >
-            <Calendar size={18} /> Upcoming Events
+            <Calendar size={18} /> Upcoming
           </button>
           <button
             onClick={() => { setView('History'); setSelectedEvent(null); }}
-            className={`px-8 py-3 rounded-xl font-bold text-sm transition-all flex items-center gap-2.5 ${
+            className={`flex-1 md:flex-none px-8 py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2.5 ${
               view === 'History' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/20' : 'text-slate-400 hover:bg-slate-50'
             }`}
           >
-            <History size={18} /> Event History
+            <HistoryIcon size={18} /> History
           </button>
         </div>
 
-        <div className="flex gap-4">
-          <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-xl border border-gray-100 shadow-sm">
+        <div className="flex flex-wrap gap-4 w-full md:w-auto">
+          <button
+            onClick={exportCSV}
+            className="flex-1 md:flex-none px-6 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-50 transition-all flex items-center justify-center gap-2 shadow-sm"
+          >
+            <FileText size={16} /> Export CSV
+          </button>
+          <div className="flex-1 md:flex-none flex items-center gap-2 bg-white px-4 py-2 rounded-xl border border-gray-100 shadow-sm">
             <Filter size={14} className="text-gray-400" />
             <select 
               className="text-sm font-bold bg-transparent outline-none"
@@ -150,9 +193,9 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
         </div>
       </div>
 
-      <div className="grid grid-cols-12 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Event List */}
-        <div className="col-span-5 space-y-4">
+        <div className="lg:col-span-5 space-y-4">
           {filteredEvents.length === 0 ? (
             <div className="bg-white p-12 rounded-3xl border border-dashed border-gray-200 text-center">
               <Calendar className="mx-auto text-gray-300 mb-2" />
@@ -160,16 +203,16 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
             </div>
           ) : (
             filteredEvents.map(event => (
-              <button
+              <div
                 key={event.id}
                 onClick={() => handleSelectEvent(event)}
-                className={`w-full text-left p-6 rounded-3xl border-2 transition-all group ${
-                  selectedEvent?.id === event.id ? 'border-emerald-500 bg-emerald-50' : 'border-white bg-white hover:border-emerald-100 shadow-sm'
+                className={`w-full text-left p-6 rounded-3xl border-2 transition-all group cursor-pointer ${
+                  selectedEvent?.id === event.id ? 'border-blue-500 bg-blue-50' : 'border-white bg-white hover:border-blue-100 shadow-sm'
                 }`}
               >
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex-1">
-                    <h4 className="font-bold text-lg text-gray-900 group-hover:text-emerald-600 transition-colors">{event.name}</h4>
+                    <h4 className="font-bold text-lg text-gray-900 group-hover:text-blue-600 transition-colors">{event.name}</h4>
                     <p className="text-sm text-gray-500 font-medium">{event.department}</p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -181,7 +224,8 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
                     </span>
                     <button 
                       onClick={(e) => handleDeleteEvent(e, event.id)}
-                      className="p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                      className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-red-500 hover:border-red-100 hover:bg-red-50 rounded-xl transition-all shadow-sm"
+                      title="Delete Event"
                     >
                       <Trash2 size={16} />
                     </button>
@@ -189,22 +233,22 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <Calendar size={14} className="text-emerald-500" /> {event.date}
+                    <Calendar size={14} className="text-blue-500" /> {event.date}
                   </div>
                   <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <Users size={14} className="text-emerald-500" /> {event.student_count} Students
+                    <Users size={14} className="text-blue-500" /> {event.student_count} Students
                   </div>
                   <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <MapPin size={14} className="text-emerald-500" /> {event.hall_name}
+                    <MapPin size={14} className="text-blue-500" /> {event.hall_name}
                   </div>
                 </div>
-              </button>
+              </div>
             ))
           )}
         </div>
 
         {/* Details View */}
-        <div className="col-span-7">
+        <div className="lg:col-span-7">
           <AnimatePresence mode="wait">
             {!selectedEvent ? (
               <motion.div 
@@ -245,7 +289,16 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-6 mb-10">
+                <div className="w-full h-48 bg-slate-100 rounded-[2rem] overflow-hidden mb-8 shadow-inner border border-slate-50">
+                  <img 
+                    src={getHallImage(selectedEvent.hall_name || '')} 
+                    alt="Hall Preview"
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-10">
                   <div className="bg-gray-50 p-4 rounded-2xl">
                     <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Hall</p>
                     <p className="font-bold text-gray-900 flex items-center gap-2">
@@ -313,7 +366,7 @@ export default function PrincipalDashboard({ user, activeTab }: PrincipalDashboa
                     </button>
                     <button 
                       onClick={() => handleApprove('Approved')}
-                      className="flex-1 py-4 bg-emerald-500 text-white rounded-2xl font-bold hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2"
+                      className="flex-1 py-4 bg-gradient-to-r from-blue-600 to-emerald-600 text-white rounded-2xl font-bold hover:opacity-90 transition-all shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2"
                     >
                       <CheckCircle size={20} /> Approve Event
                     </button>

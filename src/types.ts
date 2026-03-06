@@ -14,7 +14,7 @@ export type EventStatus =
   | "Approved" 
   | "Declined";
 
-export interface Event {
+export interface KPREvent {
   id: number;
   name: string;
   resource_person: string;
@@ -41,6 +41,7 @@ export interface Hall {
   capacity: number;
   type: string;
   is_locked: number;
+  image?: string;
 }
 
 export interface InventoryItem {
@@ -48,6 +49,7 @@ export interface InventoryItem {
   name: string;
   department: "IT" | "Reception";
   stock_qty: number;
+  in_use?: number;
 }
 
 export interface EventInventoryItem {
@@ -59,6 +61,8 @@ export interface EventInventoryItem {
   requested_qty: number;
   providable_qty: number;
   allocated_qty: number;
+  returned_qty: number;
   status: "Pending" | "Approved" | "Declined";
   stock_qty: number;
+  available_qty: number;
 }

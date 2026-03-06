@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { User, Event, Hall, InventoryItem, EventInventoryItem } from '../types';
+import { User, KPREvent, Hall, InventoryItem, EventInventoryItem } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
+import { mockApi } from '../services/mockApi';
 import { 
   Calendar, 
   Users, 
@@ -22,13 +23,14 @@ import {
 interface BookerDashboardProps {
   user: User;
   activeTab: string;
+  isLocked?: boolean;
 }
 
-export default function BookerDashboard({ user, activeTab }: BookerDashboardProps) {
+export default function BookerDashboard({ user, activeTab, isLocked }: BookerDashboardProps) {
   const [view, setView] = useState<'dashboard' | 'form'>('dashboard');
   const [phase, setPhase] = useState(1);
-  const [events, setEvents] = useState<Event[]>([]);
-  const [selectedEventDetails, setSelectedEventDetails] = useState<Event | null>(null);
+  const [events, setEvents] = useState<KPREvent[]>([]);
+  const [selectedEventDetails, setSelectedEventDetails] = useState<KPREvent | null>(null);
   const [selectedEventInventory, setSelectedEventInventory] = useState<EventInventoryItem[]>([]);
   
   const [eventData, setEventData] = useState({
@@ -54,33 +56,33 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const getHallImage = (hallName: string) => {
+    if (hallName.toLowerCase().includes('seminar')) {
+      return "https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop";
+    }
+    return "https://images.unsplash.com/photo-1580582932707-520aed937b7b?q=80&w=1000&auto=format&fit=crop";
+  };
+
   useEffect(() => {
     if (activeTab === 'Dashboard' || activeTab === 'Events') setView('dashboard');
   }, [activeTab]);
 
   useEffect(() => {
     fetchEvents();
-    fetch('/api/halls')
-      .then(res => res.json())
-      .then(data => {
-        // Ensure uniqueness by name just in case
-        const uniqueHalls = Array.isArray(data) ? data.filter((hall, index, self) =>
-          index === self.findIndex((h) => h.name === hall.name)
-        ) : [];
-        setHalls(uniqueHalls);
-      });
-    fetch('/api/inventory-items').then(res => res.json()).then(setInventoryItems);
+    mockApi.getHalls().then(data => {
+      const uniqueHalls = Array.isArray(data) ? data.filter((hall, index, self) =>
+        index === self.findIndex((h) => h.name === hall.name)
+      ) : [];
+      setHalls(uniqueHalls);
+    });
+    mockApi.getInventoryItems().then(setInventoryItems);
   }, []);
 
   const fetchEvents = async () => {
     try {
-      const res = await fetch('/api/events');
-      const data = await res.json();
-      console.log('Fetched Events:', data);
-      console.log('Current User:', user);
+      const data = await mockApi.getEvents();
       if (Array.isArray(data)) {
-        const filtered = data.filter((e: Event) => Number(e.booker_id) === Number(user.id));
-        console.log('Filtered Events:', filtered);
+        const filtered = data.filter((e: KPREvent) => Number(e.booker_id) === Number(user.id));
         setEvents(filtered);
       } else {
         setEvents([]);
@@ -91,18 +93,18 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
     }
   };
 
-  const fetchEventDetails = async (event: Event) => {
+  const fetchEventDetails = async (event: KPREvent) => {
     setSelectedEventDetails(event);
-    const res = await fetch(`/api/event-inventory/${event.id}`);
-    const data = await res.json();
+    const data = await mockApi.getEventInventory(event.id);
     setSelectedEventInventory(data);
   };
 
   const handleDeleteEvent = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
-    if (!confirm('Are you sure you want to delete this proposal?')) return;
+    if (!confirm('Are you sure you want to delete this event?')) return;
     try {
-      await fetch(`/api/events/${id}`, { method: 'DELETE' });
+      await mockApi.deleteEvent(id);
+      alert('Event deleted successfully.');
       fetchEvents();
       if (selectedEventDetails?.id === id) setSelectedEventDetails(null);
     } catch (err) {
@@ -135,24 +137,40 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
     }
 
     setPhase(2);
+    // Refresh halls to get latest lock status
+    mockApi.getHalls().then(data => {
+      const uniqueHalls = Array.isArray(data) ? data.filter((hall, index, self) =>
+        index === self.findIndex((h) => h.name === hall.name)
+      ) : [];
+      setHalls(uniqueHalls);
+    });
   };
 
-  const suggestedHalls = halls.filter(hall => {
-    const count = eventData.student_count;
-    // Show all halls that can accommodate the count
-    return hall.capacity >= count;
-  });
+  const suggestedHalls = halls
+    .filter(hall => hall.capacity >= eventData.student_count && hall.is_locked === 0)
+    .sort((a, b) => a.capacity - b.capacity);
+
+  const otherHalls = halls
+    .filter(hall => hall.capacity < eventData.student_count || hall.is_locked === 1)
+    .sort((a, b) => a.capacity - b.capacity);
+
+  const sortedHalls = [...suggestedHalls, ...otherHalls];
 
   const handlePhase2Submit = async () => {
     if (!selectedHall) return;
     setError('');
 
     // Check availability
-    const res = await fetch(`/api/check-availability?hall_id=${selectedHall}&date=${eventData.date}`);
-    const { available } = await res.json();
+    const events = await mockApi.getEvents();
+    const isConflict = events.some(e => 
+      e.hall_id === selectedHall && 
+      e.date === eventData.date && 
+      e.time_slot === eventData.time_slot &&
+      e.status !== 'Declined'
+    );
     
-    if (!available) {
-      setError('This hall is already booked for the selected date. Please choose another hall or date.');
+    if (isConflict) {
+      setError('This hall is already booked for the selected date and time slot. Please choose another hall or date/time.');
       return;
     }
 
@@ -177,35 +195,23 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
     setError('');
     try {
       // 1. Create Event
-      const eventRes = await fetch('/api/events', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          ...eventData, 
-          booker_id: user.id,
-          hall_id: selectedHall
-        }),
+      const hall = halls.find(h => h.id === selectedHall);
+      const newEvent = await mockApi.addEvent({ 
+        ...eventData, 
+        booker_id: user.id,
+        hall_id: selectedHall!,
+        hall_name: hall?.name || '',
+        status: 'Pending_Admin', // Initial status is Pending_Admin
+        has_budget: eventData.has_budget ? 1 : 0,
+        budget_amount: eventData.budget_amount,
+        intro_video: eventData.intro_video ? 1 : 0,
+        dance_performance: eventData.dance_performance ? 1 : 0
       });
       
-      const data = await eventRes.json();
-      
-      if (!eventRes.ok) {
-        setError(data.error || 'Failed to create event');
-        setLoading(false);
-        return;
-      }
-      
-      const { id } = data;
-
       // 2. Submit Inventory
       if (selectedItems.length > 0) {
-        const invRes = await fetch('/api/event-inventory', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ event_id: id, items: selectedItems }),
-        });
-        if (!invRes.ok) {
-          console.error('Failed to submit inventory');
+        for (const item of selectedItems) {
+          await mockApi.addEventInventory(newEvent.id, item.item_id, item.requested_qty);
         }
       }
 
@@ -246,10 +252,10 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
     return (
       <div className="space-y-8">
         {/* Stats Grid */}
-        <div className="grid grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 lg:gap-6">
           {[
             { label: 'Submitted', value: stats.submitted, color: 'bg-blue-500', icon: FileText },
-            { label: 'Approved', value: stats.approved, color: 'bg-emerald-500', icon: CheckCircle },
+            { label: 'Approved', value: stats.approved, color: 'bg-blue-600', icon: CheckCircle },
             { label: 'Declined', value: stats.declined, color: 'bg-red-500', icon: X },
             { label: 'Pending', value: stats.pending, color: 'bg-amber-500', icon: Clock },
           ].map((stat) => (
@@ -266,12 +272,21 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
         </div>
 
         {/* Logs & New Proposal */}
-        <div className="grid grid-cols-12 gap-8">
-          <div className="col-span-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-8">
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-6 border-b border-slate-100 flex justify-between items-center">
                 <h2 className="text-xl font-bold text-slate-900">Proposal Logs</h2>
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{events.length} Total</span>
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={fetchEvents}
+                    className="p-2 text-slate-400 hover:text-emerald-500 transition-colors"
+                    title="Refresh Logs"
+                  >
+                    <Clock size={18} />
+                  </button>
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{events.length} Total</span>
+                </div>
               </div>
               <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto">
                 {!Array.isArray(events) || events.length === 0 ? (
@@ -287,11 +302,13 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
                         className="w-full p-6 hover:bg-slate-50 transition-colors flex items-center justify-between border-b border-slate-50 last:border-0"
                       >
                         <div className="flex items-center gap-4">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${
-                            event.status === 'Approved' ? 'bg-emerald-100 text-emerald-600' :
-                            event.status === 'Declined' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'
-                          }`}>
-                            {event.name?.[0]?.toUpperCase() || '?'}
+                          <div className="w-10 h-10 rounded-xl overflow-hidden shadow-sm border border-slate-100">
+                            <img 
+                              src={getHallImage(event.hall_name || '')} 
+                              alt="Hall Preview"
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
                           </div>
                           <div className="text-left">
                             <h3 className="font-bold text-slate-900 group-hover:text-emerald-600 transition-colors">{event.name}</h3>
@@ -310,7 +327,8 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
                       </button>
                       <button 
                         onClick={(e) => handleDeleteEvent(e, event.id)}
-                        className="absolute right-6 top-1/2 -translate-y-1/2 p-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                        className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-white border border-slate-200 text-slate-400 hover:text-red-500 hover:border-red-100 hover:bg-red-50 rounded-xl transition-all z-20 shadow-sm"
+                        title="Delete Proposal"
                       >
                         <Trash2 size={18} />
                       </button>
@@ -321,17 +339,28 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
             </div>
           </div>
 
-          <div className="col-span-4">
+          <div className="lg:col-span-4">
             <button
-              onClick={() => setView('form')}
-              className="w-full bg-slate-900 text-white p-8 rounded-[2.5rem] shadow-2xl shadow-slate-900/20 hover:bg-slate-800 transition-all flex flex-col items-center justify-center gap-6 group"
+              onClick={() => !isLocked && setView('form')}
+              disabled={isLocked}
+              className={`w-full p-8 rounded-[2.5rem] shadow-2xl transition-all flex flex-col items-center justify-center gap-6 group ${
+                isLocked 
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none' 
+                  : 'bg-slate-900 text-white shadow-slate-900/20 hover:bg-slate-800'
+              }`}
             >
-              <div className="w-20 h-20 bg-emerald-500 rounded-3xl flex items-center justify-center shadow-lg shadow-emerald-500/30 group-hover:scale-110 transition-transform rotate-3">
-                <Plus size={40} />
+              <div className={`w-20 h-20 rounded-3xl flex items-center justify-center shadow-lg transition-transform rotate-3 ${
+                isLocked ? 'bg-slate-200 text-slate-400' : 'bg-blue-600 text-white shadow-blue-600/30 group-hover:scale-110'
+              }`}>
+                {isLocked ? <Lock size={40} /> : <Plus size={40} />}
               </div>
               <div className="text-center">
-                <h3 className="text-2xl font-extrabold tracking-tight">New Proposal</h3>
-                <p className="text-sm text-slate-400 mt-2 font-medium">Book a hall and request items</p>
+                <h3 className="text-2xl font-extrabold tracking-tight">
+                  {isLocked ? 'Portal Locked' : 'New Proposal'}
+                </h3>
+                <p className="text-sm mt-2 font-medium">
+                  {isLocked ? 'Maintenance in progress' : 'Book a hall and request items'}
+                </p>
               </div>
             </button>
 
@@ -359,6 +388,14 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
                     </button>
                   </div>
                   <div className="space-y-4">
+                    <div className="w-full h-32 bg-slate-100 rounded-2xl overflow-hidden mb-4">
+                      <img 
+                        src={selectedEventDetails.hall_name ? getHallImage(selectedEventDetails.hall_name) : getHallImage('')} 
+                        alt="Hall Preview"
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-400">Hall</span>
                       <span className="font-bold">{selectedEventDetails.hall_name || 'Not assigned'}</span>
@@ -418,14 +455,21 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
 
       {/* Stepper */}
       <div className="flex items-center justify-between mb-12 relative px-4">
+        <div className="absolute top-5 left-10 right-10 h-[2px] bg-slate-100 z-0">
+          <motion.div 
+            initial={{ width: 0 }}
+            animate={{ width: `${(phase - 1) * 50}%` }}
+            className="h-full bg-gradient-to-r from-blue-600 to-emerald-600"
+          />
+        </div>
         {[1, 2, 3].map((s) => (
           <div key={s} className="relative z-10 flex flex-col items-center">
             <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold transition-all ${
-              phase >= s ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-white text-slate-400 border-2 border-slate-200'
+              phase >= s ? 'bg-gradient-to-r from-blue-600 to-emerald-600 text-white shadow-lg shadow-blue-600/20' : 'bg-white text-slate-400 border-2 border-slate-200'
             }`}>
               {phase > s ? <CheckCircle size={20} /> : s}
             </div>
-            <span className={`text-[10px] font-bold mt-2 uppercase tracking-wider ${phase >= s ? 'text-indigo-600' : 'text-slate-400'}`}>
+            <span className={`text-[10px] font-bold mt-2 uppercase tracking-wider ${phase >= s ? 'text-blue-600' : 'text-slate-400'}`}>
               {s === 1 ? 'Event Info' : s === 2 ? 'Hall Selection' : 'Requirements'}
             </span>
           </div>
@@ -444,8 +488,8 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
             <h2 className="text-2xl font-bold mb-8 flex items-center gap-3">
               <Calendar className="text-emerald-500" /> Event Details
             </h2>
-            <form onSubmit={handlePhase1Submit} className="grid grid-cols-2 gap-6">
-              <div className="col-span-2">
+            <form onSubmit={handlePhase1Submit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="md:col-span-2">
                 <label className="block text-sm font-semibold text-gray-700 mb-2">Event Name</label>
                 <input
                   required
@@ -585,7 +629,7 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
               )}
 
               <div className="col-span-2 pt-4">
-                <button type="submit" className="w-full bg-emerald-500 text-white py-4 rounded-xl font-bold hover:bg-emerald-600 transition-all flex items-center justify-center gap-2">
+                <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-emerald-600 text-white py-4 rounded-xl font-bold hover:opacity-90 transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20">
                   Next Step: Hall Selection <ChevronRight size={20} />
                 </button>
               </div>
@@ -604,36 +648,85 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
             <h2 className="text-2xl font-bold mb-2 flex items-center gap-3">
               <MapPin className="text-emerald-500" /> Select Hall
             </h2>
-            <p className="text-gray-500 mb-8">Available halls for {eventData.student_count} students on {eventData.date}</p>
+            <p className="text-gray-500 mb-8">Halls matching your capacity ({eventData.student_count} students) are highlighted.</p>
             
-            <div className="grid grid-cols-2 gap-4 mb-8">
-              {suggestedHalls.length === 0 ? (
-                <div className="col-span-2 p-12 text-center bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+              {sortedHalls.length === 0 ? (
+                <div className="col-span-full p-12 text-center bg-slate-50 rounded-3xl border border-dashed border-slate-200">
                   <AlertCircle className="mx-auto mb-4 text-slate-400" size={48} />
-                  <p className="text-slate-600 font-medium">No halls available for this student count.</p>
-                  <p className="text-slate-400 text-sm mt-1">Try adjusting the student count in the previous step.</p>
+                  <p className="text-slate-600 font-medium">No halls found in the system.</p>
                 </div>
               ) : (
-                suggestedHalls.map(hall => (
-                  <button
-                    key={hall.id}
-                    onClick={() => setSelectedHall(hall.id)}
-                    className={`p-6 rounded-2xl border-2 transition-all flex flex-col gap-4 group ${
-                      selectedHall === hall.id ? 'border-emerald-500 bg-emerald-50/50' : 'border-slate-100 bg-white hover:border-emerald-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${selectedHall === hall.id ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400 group-hover:bg-emerald-100 group-hover:text-emerald-500'}`}>
-                        <Users size={24} />
+                sortedHalls.map(hall => {
+                  const isSuggested = hall.capacity >= eventData.student_count && hall.is_locked === 0;
+                  const isHallLocked = hall.is_locked === 1;
+                  const isTooSmall = hall.capacity < eventData.student_count;
+                  
+                  return (
+                    <button
+                      key={hall.id}
+                      disabled={isLocked || isHallLocked || isTooSmall}
+                      onClick={() => setSelectedHall(hall.id)}
+                      className={`rounded-2xl border-2 transition-none flex flex-col group relative overflow-hidden ${
+                        selectedHall === hall.id 
+                          ? 'border-emerald-500 bg-emerald-50/50' 
+                          : (isLocked || isHallLocked || isTooSmall)
+                            ? 'border-slate-100 bg-slate-50 opacity-60 cursor-not-allowed'
+                            : isSuggested
+                              ? 'border-emerald-100 bg-white hover:border-emerald-300'
+                              : 'border-slate-100 bg-white hover:border-slate-300'
+                      }`}
+                    >
+                      {/* Hall Preview Image */}
+                      <div className="w-full h-40 bg-slate-100 relative overflow-hidden">
+                        <img 
+                          src={getHallImage(hall.name)} 
+                          alt={hall.name}
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                        
+                        {isSuggested && !isLocked && !isHallLocked && (
+                          <span className="absolute top-4 right-4 px-3 py-1 bg-emerald-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest shadow-lg">
+                            Suggested
+                          </span>
+                        )}
+                        {(isLocked || isHallLocked) && (
+                          <span className="absolute top-4 right-4 px-3 py-1 bg-red-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest flex items-center gap-1 shadow-lg">
+                            <Lock size={10} /> Locked
+                          </span>
+                        )}
+                        {isTooSmall && !isHallLocked && !isLocked && (
+                          <span className="absolute top-4 right-4 px-3 py-1 bg-amber-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest shadow-lg">
+                            Too Small
+                          </span>
+                        )}
+                        
+                        <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                            selectedHall === hall.id ? 'bg-emerald-500 text-white' : 'bg-white/20 backdrop-blur-md text-white'
+                          }`}>
+                            <Users size={16} />
+                          </div>
+                          <span className="text-white font-bold text-sm">{hall.capacity} Capacity</span>
+                        </div>
                       </div>
-                      {selectedHall === hall.id && <CheckCircle className="text-emerald-500" />}
-                    </div>
-                    <div className="text-left">
-                      <h3 className="font-bold text-slate-900">{hall.name}</h3>
-                      <p className="text-xs text-slate-500">Capacity: {hall.capacity}</p>
-                    </div>
-                  </button>
-                ))
+
+                      <div className="p-6 text-left flex items-center justify-between w-full">
+                        <div>
+                          <h3 className="font-bold text-slate-900 text-lg">{hall.name}</h3>
+                          <p className="text-xs text-slate-500 font-medium">{hall.type} • Campus A</p>
+                        </div>
+                        {selectedHall === hall.id && (
+                          <div className="w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center text-white shadow-lg shadow-emerald-500/20">
+                            <CheckCircle size={20} />
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
 
@@ -653,7 +746,7 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
               <button 
                 onClick={handlePhase2Submit}
                 disabled={!selectedHall}
-                className="flex-[2] bg-emerald-500 text-white py-4 rounded-xl font-bold hover:bg-emerald-600 transition-all disabled:opacity-50"
+                className="flex-[2] bg-gradient-to-r from-blue-600 to-emerald-600 text-white py-4 rounded-xl font-bold hover:opacity-90 transition-all disabled:opacity-50 shadow-lg shadow-blue-600/20"
               >
                 Confirm Hall & Continue
               </button>
@@ -673,9 +766,9 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
               <Package className="text-emerald-500" /> Event Requirements
             </h2>
 
-            <div className="grid grid-cols-12 gap-8">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
               {/* Item Selection List */}
-              <div className="col-span-7">
+              <div className="col-span-12 lg:col-span-7">
                 <div className="space-y-6">
                   {['Reception', 'IT'].map(dept => (
                     <div key={dept}>
@@ -683,7 +776,7 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
                         {dept === 'IT' ? <Clock size={14} /> : <FileText size={14} />}
                         {dept} Requirements
                       </h3>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {inventoryItems.filter(i => i.department === dept).map(item => (
                           <button
                             key={item.id}
@@ -702,35 +795,35 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
 
                   {/* Special Toggles */}
                   <div className="bg-gray-50 p-6 rounded-2xl border border-gray-100 space-y-6">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                       <div>
                         <h4 className="text-sm font-bold text-gray-900">Intro Video / KPR Anthem</h4>
                         <p className="text-[10px] text-gray-500">Do you need this played at the start?</p>
                       </div>
-                      <div className="flex bg-white p-1 rounded-lg border border-gray-200">
+                      <div className="flex bg-white p-1 rounded-lg border border-gray-200 w-full sm:w-auto">
                         <button 
                           onClick={() => setEventData({...eventData, intro_video: true})}
-                          className={`px-3 py-1 rounded-md text-[10px] font-bold ${eventData.intro_video ? 'bg-emerald-500 text-white' : 'text-gray-400'}`}
+                          className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-[10px] font-bold ${eventData.intro_video ? 'bg-emerald-500 text-white' : 'text-gray-400'}`}
                         >YES</button>
                         <button 
                           onClick={() => setEventData({...eventData, intro_video: false})}
-                          className={`px-3 py-1 rounded-md text-[10px] font-bold ${!eventData.intro_video ? 'bg-red-500 text-white' : 'text-gray-400'}`}
+                          className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-[10px] font-bold ${!eventData.intro_video ? 'bg-red-500 text-white' : 'text-gray-400'}`}
                         >NO</button>
                       </div>
                     </div>
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                       <div>
                         <h4 className="text-sm font-bold text-gray-900">Dance Performance</h4>
                         <p className="text-[10px] text-gray-500">Is there a dance performance scheduled?</p>
                       </div>
-                      <div className="flex bg-white p-1 rounded-lg border border-gray-200">
+                      <div className="flex bg-white p-1 rounded-lg border border-gray-200 w-full sm:w-auto">
                         <button 
                           onClick={() => setEventData({...eventData, dance_performance: true})}
-                          className={`px-3 py-1 rounded-md text-[10px] font-bold ${eventData.dance_performance ? 'bg-emerald-500 text-white' : 'text-gray-400'}`}
+                          className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-[10px] font-bold ${eventData.dance_performance ? 'bg-emerald-500 text-white' : 'text-gray-400'}`}
                         >YES</button>
                         <button 
                           onClick={() => setEventData({...eventData, dance_performance: false})}
-                          className={`px-3 py-1 rounded-md text-[10px] font-bold ${!eventData.dance_performance ? 'bg-red-500 text-white' : 'text-gray-400'}`}
+                          className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-[10px] font-bold ${!eventData.dance_performance ? 'bg-red-500 text-white' : 'text-gray-400'}`}
                         >NO</button>
                       </div>
                     </div>
@@ -739,8 +832,8 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
               </div>
 
               {/* Selected Items List */}
-              <div className="col-span-5">
-                <div className="bg-gray-50 rounded-2xl p-6 border border-gray-100 sticky top-4">
+              <div className="col-span-12 lg:col-span-5">
+                <div className="bg-gray-50 rounded-2xl p-6 border border-gray-100 lg:sticky lg:top-4">
                   <h3 className="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
                     <Package size={16} className="text-emerald-500" /> Selected Items
                   </h3>
@@ -778,7 +871,7 @@ export default function BookerDashboard({ user, activeTab }: BookerDashboardProp
                     <button 
                       onClick={handleFinalSubmit}
                       disabled={loading}
-                      className="w-full bg-[#0F172A] text-white py-4 rounded-xl font-bold hover:bg-indigo-950 transition-all shadow-xl shadow-indigo-900/20 active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
+                      className="w-full bg-gradient-to-r from-blue-600 to-emerald-600 text-white py-4 rounded-xl font-bold hover:opacity-90 transition-all shadow-xl shadow-blue-600/20 active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
                     >
                       {loading ? 'Submitting...' : 'Submit Proposal'}
                     </button>
